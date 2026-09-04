@@ -1,0 +1,5 @@
+# Root-level catch-all. backend/ and frontend/ each keep their own
+# .gitignore for stack-specific artifacts (venv, node_modules, build output).
+.DS_Store
+Thumbs.db
+*.log

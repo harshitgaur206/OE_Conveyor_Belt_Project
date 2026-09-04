@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+media/
+models/*.pt
+.env
+
+# Local RTSP test server (mediamtx) — a downloadable dev tool, not project
+# code. Re-fetch from https://github.com/bluenviron/mediamtx/releases if
+# missing; mediamtx.yml/sample.mp4/certs are small and kept for convenience.
+rtsp_test_server/mediamtx.exe
+rtsp_test_server/mediamtx.zip
+rtsp_test_server/*.log
