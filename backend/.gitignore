@@ -3,7 +3,6 @@ __pycache__/
 .venv/
 venv/
 media/
-models/*.pt
 .env
 
 # Local RTSP test server (mediamtx) — a downloadable dev tool, not project
