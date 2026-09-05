@@ -15,6 +15,23 @@ from ultralytics import YOLO
 from app.config import get_settings
 from app.line_counter import LineCounter
 
+# Without this, two runs of the same video on the same GPU can produce
+# different bag counts: CUDA's default kernels don't guarantee a fixed
+# floating-point reduction order, so detection confidences/box coordinates
+# jitter by tiny amounts run-to-run. On ordinary content that's invisible,
+# but on borderline footage (blurry, marginal confidences, closely-spaced
+# bags) that jitter is enough to flip which side of a threshold a detection
+# lands on, or how ByteTrack resolves a close ID match — observed directly
+# as bag_count varying run-to-run on identical code and the same input file.
+# Forcing determinism trades a little raw speed for the same input always
+# producing the same output, which matters far more once real per-camera
+# thresholds get tuned against this system's results.
+torch.manual_seed(0)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(0)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 
 @dataclass
 class DetectionResult:
@@ -29,6 +46,23 @@ def _resolve_device(requested: str) -> str:
     if requested != "auto":
         return requested
     return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+
+# Confidence floor passed to the tracker in track_frame(), not the user-facing
+# confidence_threshold, so ByteTrack's low-confidence track-association logic
+# gets more boxes to work with than the display threshold alone would allow
+# through. See track_frame()'s docstring for why this must be decoupled from
+# the display/counting threshold.
+#
+# Deliberately NOT bytetrack.yaml's own track_low_thresh (0.10): tried that
+# first and it flooded noisy/grainy footage (night IR, heavy compression)
+# with so many marginal candidate boxes that YOLO's own NMS occasionally blew
+# past its internal time budget on a single frame ("NMS time limit 2.050s
+# exceeded"), stalling that frame for seconds. bytetrack.yaml's own
+# new_track_thresh/track_high_thresh (0.25) is the threshold that actually
+# matters for whether a box can start or extend a track, so there's no
+# benefit to going lower than that at the YOLO stage — only NMS cost.
+_TRACKER_MIN_CONF = 0.20
 
 
 class CementBagDetector:
@@ -61,6 +95,12 @@ class CementBagDetector:
         # geometry — deferred because normalized ROI points need the actual
         # frame's pixel dimensions to convert, and those aren't known here.
         self._roi_dirty = False
+        # Cache of the pixel-space inclusion mask built from self._roi, keyed
+        # by the (height, width) it was built for — see _roi_mask_for(). The
+        # polygon doesn't change frame-to-frame, so this is rebuilt only when
+        # the ROI or frame resolution actually changes.
+        self._roi_mask: np.ndarray | None = None
+        self._roi_mask_shape: tuple[int, int] | None = None
 
     @property
     def has_roi(self) -> bool:
@@ -86,6 +126,8 @@ class CementBagDetector:
         if new_roi == self._roi:
             return
         self._roi = new_roi
+        self._roi_mask = None
+        self._roi_mask_shape = None
         if self._roi is None:
             # Falling back to full-frame detection — drop the ROI-derived
             # counting line so it re-calibrates from observed motion instead.
@@ -93,44 +135,58 @@ class CementBagDetector:
         else:
             self._roi_dirty = True
 
-    def _apply_roi(self, frame_bgr: np.ndarray) -> np.ndarray:
-        """Fades out everything outside the ROI polygon before inference, so
-        YOLO is only really looking at the marked area (and can't
-        spuriously detect in the rest of the frame). Cheaper alternatives
-        like cropping to the bounding box would still let a non-rectangular
-        ROI leak in its corners.
+    def _roi_mask_for(self, height: int, width: int) -> np.ndarray:
+        """Binary inclusion mask (uint8, 0 or 255) built from self._roi,
+        cached per (height, width) since the polygon doesn't change
+        frame-to-frame.
 
-        The mask is dilated and blurred rather than applied as a hard
-        binary cutoff: a bag straddling a sharp boundary gets abruptly
-        clipped as it moves, and that changing silhouette shape from frame
-        to frame is enough to push its confidence back and forth across
-        the threshold — visible as boxes flickering on and off right at
-        the ROI edge. Dilating gives real content just outside the drawn
-        line a little grace, and blurring turns the cutoff into a soft
-        fade the model reads more like ordinary vignetting than an
-        artifact, while area well outside the ROI is still ~fully zeroed.
+        This used to be multiplied directly against pixel values to fade
+        out everything outside the ROI *before* detection ran. That fed a
+        degraded, partially-blacked-out image to the model right at the
+        boundary — exactly where bags actually cross — which was measured
+        to both hurt detection confidence and, worse, fragment ByteTrack
+        continuity badly enough that the line-crossing calibration (which
+        needs the *same* track seen on two directly consecutive frames,
+        see line_counter.py) sometimes never accumulated a single usable
+        sample for an entire video. Detection now always runs on the full,
+        untouched frame; this mask is used only afterwards, in
+        _filter_by_roi(), to drop detections centered outside the drawn
+        area — so a real bag's pixels are never degraded, only the
+        decision of whether to keep/count it.
         """
-        if not self._roi:
-            return frame_bgr
-        height, width = frame_bgr.shape[:2]
-        polygon = np.array(
-            [(x * width, y * height) for x, y in self._roi],
-            dtype=np.int32,
-        )
-        mask = np.zeros((height, width), dtype=np.uint8)
-        cv2.fillPoly(mask, [polygon], 255)
-        margin = max(8, int(min(width, height) * 0.02))
-        kernel = np.ones((margin, margin), dtype=np.uint8)
-        mask = cv2.dilate(mask, kernel)
-        mask = cv2.GaussianBlur(mask, (margin * 2 + 1, margin * 2 + 1), 0)
-        mask_3ch = cv2.merge([mask, mask, mask]).astype(np.float32) / 255.0
-        return (frame_bgr.astype(np.float32) * mask_3ch).astype(np.uint8)
+        if self._roi_mask_shape != (height, width):
+            polygon = np.array(
+                [(x * width, y * height) for x, y in self._roi],
+                dtype=np.int32,
+            )
+            mask = np.zeros((height, width), dtype=np.uint8)
+            cv2.fillPoly(mask, [polygon], 255)
+            # Same small grace margin as before: a bag whose center lands
+            # just outside the drawn line (imprecise hand-drawn polygon)
+            # still counts, rather than a hard cutoff exactly on the line.
+            margin = max(8, int(min(width, height) * 0.02))
+            kernel = np.ones((margin, margin), dtype=np.uint8)
+            self._roi_mask = cv2.dilate(mask, kernel)
+            self._roi_mask_shape = (height, width)
+        return self._roi_mask
+
+    def _filter_by_roi(self, result, height: int, width: int):
+        """Keeps only the boxes in `result` whose center falls inside the
+        ROI (see _roi_mask_for). No-op (returns `result` unchanged) when no
+        ROI is set."""
+        if not self._roi or result.boxes is None or len(result.boxes) == 0:
+            return result
+        mask = self._roi_mask_for(height, width)
+        centers = result.boxes.xywh[:, :2].cpu().numpy()
+        xs = np.clip(centers[:, 0].astype(np.int32), 0, width - 1)
+        ys = np.clip(centers[:, 1].astype(np.int32), 0, height - 1)
+        keep = mask[ys, xs] > 0
+        return result[keep]
 
     def detect_image(self, image_bgr: np.ndarray) -> DetectionResult:
         start = time.perf_counter()
-        masked = self._apply_roi(image_bgr)
         results = self.model.predict(
-            source=masked,
+            source=image_bgr,
             conf=self.confidence_threshold,
             iou=self.iou_threshold,
             imgsz=self.image_size,
@@ -140,10 +196,9 @@ class CementBagDetector:
         latency_ms = (time.perf_counter() - start) * 1000
 
         result = results[0]
-        # Draw over the original (unmasked) frame rather than `masked` so an
-        # ROI doesn't turn the rest of the image black for the viewer —
-        # detection is still restricted to the ROI, only the display isn't.
-        annotated = result.plot(img=image_bgr if self._roi else None)
+        height, width = image_bgr.shape[:2]
+        result = self._filter_by_roi(result, height, width)
+        annotated = result.plot()
         confidences = [float(c) for c in result.boxes.conf.tolist()] if result.boxes is not None else []
 
         ok, buffer = cv2.imencode(".jpg", annotated)
@@ -175,12 +230,27 @@ class CementBagDetector:
         is set, the drawn line is additionally confined to display within
         its bounds (see line_counter.set_roi_bounds); that's cosmetic only
         and never affects which direction counts as a crossing.
+
+        The YOLO call below always asks for boxes down to _TRACKER_MIN_CONF,
+        not self.confidence_threshold: bytetrack.yaml's own track_low_thresh
+        (0.10) exists specifically so a track survives a temporary confidence
+        dip (motion blur, poor lighting) via low-confidence association
+        instead of high-confidence-only creation, but that only works if
+        ByteTrack actually gets to see those low-confidence boxes. Passing
+        self.confidence_threshold as `conf` here would filter them out before
+        ByteTrack ever runs, silently defeating that recovery path — a bag
+        that blurs for a couple of frames would lose its track and come back
+        as a new ID, which (since counting requires min_hit_streak frames on
+        one ID) frequently means it's never counted at all. self.confidence_
+        threshold is instead applied afterwards, only to what gets drawn and
+        reported — the line counter still sees every tracked position, high-
+        confidence or not, so a crossing during a brief confidence dip is not
+        lost.
         """
         original = frame_bgr
-        masked = self._apply_roi(frame_bgr)
         results = self.model.track(
-            source=masked,
-            conf=self.confidence_threshold,
+            source=original,
+            conf=_TRACKER_MIN_CONF,
             iou=self.iou_threshold,
             imgsz=self.image_size,
             device=self.device,
@@ -189,23 +259,38 @@ class CementBagDetector:
             verbose=False,
         )
         result = results[0]
-        annotated = result.plot(img=original if self._roi else None)
-        confidences = [float(c) for c in result.boxes.conf.tolist()] if result.boxes is not None else []
-        track_ids = (
+        height, width = original.shape[:2]
+
+        # Drop anything outside the drawn area *after* detection/tracking,
+        # not before — running on the full frame keeps ByteTrack's track
+        # continuity intact (see _roi_mask_for()'s docstring for why masking
+        # pixels beforehand broke calibration on real footage).
+        result = self._filter_by_roi(result, height, width)
+
+        all_track_ids = (
             [int(t) for t in result.boxes.id.tolist()]
             if result.boxes is not None and result.boxes.id is not None
             else []
         )
-
-        height, width = original.shape[:2]
+        all_centers = result.boxes.xywh[:, :2].tolist() if (all_track_ids and result.boxes is not None) else []
 
         if self._roi_dirty and self._roi is not None:
             pixel_roi = [(x * width, y * height) for x, y in self._roi]
             self.line_counter.set_roi_bounds(pixel_roi)
             self._roi_dirty = False
 
-        centers = result.boxes.xywh[:, :2].tolist() if (track_ids and result.boxes is not None) else []
-        self.line_counter.update(width, height, track_ids, centers)
+        # Every tracked position feeds the line counter, regardless of this
+        # frame's confidence — see the docstring above.
+        self.line_counter.update(width, height, all_track_ids, all_centers)
+
+        if result.boxes is not None and len(result.boxes) > 0:
+            display_result = result[result.boxes.conf >= self.confidence_threshold]
+        else:
+            display_result = result
+        annotated = display_result.plot()
+        confidences = (
+            [float(c) for c in display_result.boxes.conf.tolist()] if display_result.boxes is not None else []
+        )
 
         endpoints = self.line_counter.line_endpoints(width, height)
         if endpoints is not None:
@@ -233,7 +318,7 @@ class CementBagDetector:
         stats = {
             "current_detections": len(confidences),
             "confidence_avg": (sum(confidences) / len(confidences)) if confidences else 0.0,
-            "active_track_ids": track_ids,
+            "active_track_ids": all_track_ids,
             "line_crossing_count": self.line_counter.count,
             "calibrating": self.line_counter.is_calibrating,
         }

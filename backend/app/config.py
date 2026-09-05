@@ -38,6 +38,16 @@ class Settings:
     # belt footage (CLAUDE.md Section 28 — don't invent thresholds without
     # validation data, so treat this as a starting point, not a final value).
     confidence_threshold: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.45"))
+    # NMS suppresses a lower-confidence box only when its IoU with a
+    # higher-confidence box EXCEEDS this threshold — so a higher value is
+    # actually more permissive (fewer boxes get merged), not stricter.
+    # Reverted to 0.45 after 0.30 was tested with deterministic inference
+    # (see detector.py's torch determinism setup) and produced a worse,
+    # reproducible result on real target footage than 0.45 did — the
+    # duplicate-overlapping-box problem 0.30 targeted is real (see git
+    # history), but tightening NMS this far apparently costs more real
+    # detections on this content than it recovers. Back to the default
+    # until validated with real labeled footage per CLAUDE.md Section 28.
     iou_threshold: float = float(os.getenv("IOU_THRESHOLD", "0.45"))
     image_size: int = int(os.getenv("IMAGE_SIZE", "640"))
     webcam_frame_skip: int = int(os.getenv("WEBCAM_FRAME_SKIP", "1"))
@@ -62,7 +72,18 @@ class Settings:
     counting_line_orientation: str = os.getenv("COUNTING_LINE_ORIENTATION", "auto")
     counting_line_fraction: float = float(os.getenv("COUNTING_LINE_FRACTION", "0.5"))
     calibration_min_samples: int = int(os.getenv("CALIBRATION_MIN_SAMPLES", "20"))
-    min_hit_streak: int = int(os.getenv("MIN_HIT_STREAK", "3"))
+    # Lowered from the original 3: on fast/blurry/grainy footage, ByteTrack
+    # frequently reassigns a bag to a new track ID every couple of frames
+    # (occlusion, motion blur, confidence dips) — see detector.py's
+    # track_frame docstring. Requiring 3 consecutive hits on one ID before a
+    # crossing counts is rarely satisfied when IDs live that briefly, so real
+    # crossings were being silently dropped (observed: a video with 14 real
+    # bags counting only 1). 1 still requires two real observations of the
+    # same ID straddling the line (not a single-frame blip), just not three.
+    # Trades a small risk of double-counting a bag whose ID happens to churn
+    # exactly at the line for far fewer missed bags — for a count meant to
+    # reflect real throughput, undercounting is the worse failure mode.
+    min_hit_streak: int = int(os.getenv("MIN_HIT_STREAK", "1"))
     # Each concurrent camera loads its own YOLO model instance (see
     # camera_manager.py — tracker state can't safely be shared across
     # independent streams), so this is really a GPU/CPU memory ceiling, not
