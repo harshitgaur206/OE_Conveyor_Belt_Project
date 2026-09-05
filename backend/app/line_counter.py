@@ -19,7 +19,33 @@ to.
 import math
 from dataclasses import dataclass, field
 
+import numpy as np
+
 Point = tuple[float, float]
+
+
+def _clip_to_box(p1: Point, p2: Point, box: tuple[float, float, float, float]) -> tuple[Point, Point] | None:
+    """Liang-Barsky clip of segment p1-p2 to axis-aligned box (minx, miny,
+    maxx, maxy). Returns None if the (infinite-length) segment doesn't pass
+    through the box at all."""
+    minx, miny, maxx, maxy = box
+    x1, y1 = p1
+    x2, y2 = p2
+    dx, dy = x2 - x1, y2 - y1
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, x1 - minx), (dx, maxx - x1), (-dy, y1 - miny), (dy, maxy - y1)):
+        if p == 0:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+    if t0 > t1:
+        return None
+    return (x1 + t0 * dx, y1 + t0 * dy), (x1 + t1 * dx, y1 + t1 * dy)
 
 
 @dataclass
@@ -54,6 +80,7 @@ class LineCounter:
         self._calib_samples = 0
         self._position_sum: list[float] = [0.0, 0.0]  # observed positions, for anchor point
         self._position_samples = 0
+        self._roi_bounds: tuple[float, float, float, float] | None = None
         self.count = 0
 
     @property
@@ -68,7 +95,28 @@ class LineCounter:
         self._calib_samples = 0
         self._position_sum = [0.0, 0.0]
         self._position_samples = 0
+        self._roi_bounds = None
         self.count = 0
+
+    def set_roi_bounds(self, polygon: list[Point]) -> None:
+        """Confines the *drawn* counting line to the ROI's bounding box —
+        display only. Direction and reference are still only ever derived
+        from actually-observed bag motion (_lock/auto-calibration below):
+        an earlier version of this tried to *guess* travel direction from
+        the ROI polygon's shape alone (its principal axis via PCA on the
+        vertices), which only happens to work when the user draws an
+        elongated shape aligned with true travel — for an ordinary
+        rectangular ROI the "long axis = travel direction" guess is often
+        just wrong, silently producing a line that real crossings never
+        satisfy (count stuck at 0). Motion is ground truth; shape is not.
+        """
+        pts = np.asarray(polygon, dtype=np.float64)
+        self._roi_bounds = (
+            float(pts[:, 0].min()),
+            float(pts[:, 1].min()),
+            float(pts[:, 0].max()),
+            float(pts[:, 1].max()),
+        )
 
     def _lock(self, width: int, height: int) -> None:
         if self.orientation == "horizontal":
@@ -173,6 +221,12 @@ class LineCounter:
         px, py = -uy, ux  # perpendicular to travel direction
         rx, ry = self._reference
         span = max(width, height) * 2
-        p1 = (int(rx + px * span), int(ry + py * span))
-        p2 = (int(rx - px * span), int(ry - py * span))
-        return p1, p2
+        p1 = (rx + px * span, ry + py * span)
+        p2 = (rx - px * span, ry - py * span)
+        if self._roi_bounds is not None:
+            # ROI-derived line: keep the drawn segment within the marked
+            # region instead of stretching it across the whole frame.
+            clipped = _clip_to_box(p1, p2, self._roi_bounds)
+            if clipped is not None:
+                p1, p2 = clipped
+        return (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1]))
