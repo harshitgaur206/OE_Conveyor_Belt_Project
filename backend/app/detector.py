@@ -44,6 +44,7 @@ class CementBagDetector:
         self.device = _resolve_device(settings.device)
         self.model = YOLO(model_path or settings.model_path)
         self.model.to(self.device)
+        self._default_confidence = settings.confidence_threshold
         self.confidence_threshold = settings.confidence_threshold
         self.iou_threshold = settings.iou_threshold
         self.image_size = settings.image_size
@@ -54,11 +55,82 @@ class CementBagDetector:
             calibration_min_samples=settings.calibration_min_samples,
             min_hit_streak=settings.min_hit_streak,
         )
+        self._roi: list[tuple[float, float]] | None = None
+        # Set whenever the ROI changes; consumed by track_frame() the next
+        # time it runs to (re)derive the counting line from the new ROI's
+        # geometry — deferred because normalized ROI points need the actual
+        # frame's pixel dimensions to convert, and those aren't known here.
+        self._roi_dirty = False
+
+    @property
+    def has_roi(self) -> bool:
+        return self._roi is not None
+
+    def set_confidence(self, value: float | None) -> None:
+        """Overrides the detection confidence threshold for this detector
+        instance. Pass None to reset to the deployment-wide default from
+        settings. Each CementBagDetector is either the single shared
+        image/video detector or one dedicated to a single camera (see
+        camera_manager.py), so this never leaks between unrelated sources.
+        """
+        self.confidence_threshold = value if value is not None else self._default_confidence
+
+    def set_roi(self, points: list[tuple[float, float]] | None) -> None:
+        """Sets the region of interest as a polygon of normalized (0-1)
+        coordinates, so it stays valid across frame sizes that differ from
+        whatever preview frame the user drew it against (e.g. an RTSP stream
+        whose negotiated resolution differs slightly from the still preview).
+        Pass None to clear it and go back to detecting on the full frame.
+        """
+        new_roi = points if points else None
+        if new_roi == self._roi:
+            return
+        self._roi = new_roi
+        if self._roi is None:
+            # Falling back to full-frame detection — drop the ROI-derived
+            # counting line so it re-calibrates from observed motion instead.
+            self.line_counter.reset()
+        else:
+            self._roi_dirty = True
+
+    def _apply_roi(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """Fades out everything outside the ROI polygon before inference, so
+        YOLO is only really looking at the marked area (and can't
+        spuriously detect in the rest of the frame). Cheaper alternatives
+        like cropping to the bounding box would still let a non-rectangular
+        ROI leak in its corners.
+
+        The mask is dilated and blurred rather than applied as a hard
+        binary cutoff: a bag straddling a sharp boundary gets abruptly
+        clipped as it moves, and that changing silhouette shape from frame
+        to frame is enough to push its confidence back and forth across
+        the threshold — visible as boxes flickering on and off right at
+        the ROI edge. Dilating gives real content just outside the drawn
+        line a little grace, and blurring turns the cutoff into a soft
+        fade the model reads more like ordinary vignetting than an
+        artifact, while area well outside the ROI is still ~fully zeroed.
+        """
+        if not self._roi:
+            return frame_bgr
+        height, width = frame_bgr.shape[:2]
+        polygon = np.array(
+            [(x * width, y * height) for x, y in self._roi],
+            dtype=np.int32,
+        )
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(mask, [polygon], 255)
+        margin = max(8, int(min(width, height) * 0.02))
+        kernel = np.ones((margin, margin), dtype=np.uint8)
+        mask = cv2.dilate(mask, kernel)
+        mask = cv2.GaussianBlur(mask, (margin * 2 + 1, margin * 2 + 1), 0)
+        mask_3ch = cv2.merge([mask, mask, mask]).astype(np.float32) / 255.0
+        return (frame_bgr.astype(np.float32) * mask_3ch).astype(np.uint8)
 
     def detect_image(self, image_bgr: np.ndarray) -> DetectionResult:
         start = time.perf_counter()
+        masked = self._apply_roi(image_bgr)
         results = self.model.predict(
-            source=image_bgr,
+            source=masked,
             conf=self.confidence_threshold,
             iou=self.iou_threshold,
             imgsz=self.image_size,
@@ -68,7 +140,10 @@ class CementBagDetector:
         latency_ms = (time.perf_counter() - start) * 1000
 
         result = results[0]
-        annotated = result.plot()  # BGR np.ndarray with boxes drawn
+        # Draw over the original (unmasked) frame rather than `masked` so an
+        # ROI doesn't turn the rest of the image black for the viewer —
+        # detection is still restricted to the ROI, only the display isn't.
+        annotated = result.plot(img=image_bgr if self._roi else None)
         confidences = [float(c) for c in result.boxes.conf.tolist()] if result.boxes is not None else []
 
         ok, buffer = cv2.imencode(".jpg", annotated)
@@ -93,13 +168,18 @@ class CementBagDetector:
         new ID to the same physical bag (occlusion, motion blur, confidence
         dips), so "distinct IDs seen" overcounts badly — a single bag can
         register as 2-4 different tracks. self.line_counter instead counts
-        each track once when it crosses a line auto-calibrated to the
-        actual observed travel direction (see line_counter.py), so this
-        works on any belt orientation/camera placement, not just this one
-        demo clip's geometry.
+        each track once when it crosses a counting line, auto-calibrated
+        from a few frames of observed travel direction — real motion, not
+        guessed from the ROI polygon's shape — so this works on any belt
+        orientation/camera placement without per-site tuning. When an ROI
+        is set, the drawn line is additionally confined to display within
+        its bounds (see line_counter.set_roi_bounds); that's cosmetic only
+        and never affects which direction counts as a crossing.
         """
+        original = frame_bgr
+        masked = self._apply_roi(frame_bgr)
         results = self.model.track(
-            source=frame_bgr,
+            source=masked,
             conf=self.confidence_threshold,
             iou=self.iou_threshold,
             imgsz=self.image_size,
@@ -109,7 +189,7 @@ class CementBagDetector:
             verbose=False,
         )
         result = results[0]
-        annotated = result.plot()
+        annotated = result.plot(img=original if self._roi else None)
         confidences = [float(c) for c in result.boxes.conf.tolist()] if result.boxes is not None else []
         track_ids = (
             [int(t) for t in result.boxes.id.tolist()]
@@ -117,7 +197,13 @@ class CementBagDetector:
             else []
         )
 
-        height, width = frame_bgr.shape[:2]
+        height, width = original.shape[:2]
+
+        if self._roi_dirty and self._roi is not None:
+            pixel_roi = [(x * width, y * height) for x, y in self._roi]
+            self.line_counter.set_roi_bounds(pixel_roi)
+            self._roi_dirty = False
+
         centers = result.boxes.xywh[:, :2].tolist() if (track_ids and result.boxes is not None) else []
         self.line_counter.update(width, height, track_ids, centers)
 
@@ -169,3 +255,8 @@ class CementBagDetector:
         if predictor is not None and hasattr(predictor, "trackers"):
             del predictor.trackers
         self.line_counter.reset()
+        # reset() above also clears the ROI-derived line lock; if an ROI is
+        # still set, re-derive it on the next track_frame() call instead of
+        # falling back to a fresh motion-calibration warm-up.
+        if self._roi is not None:
+            self._roi_dirty = True

@@ -4,6 +4,24 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# Must be set before any cv2.VideoCapture(..., cv2.CAP_FFMPEG) call anywhere
+# in the app (camera_manager.py, streaming.py) — OpenCV's FFmpeg backend
+# reads this env var when a capture is opened, not at import time. This
+# module is imported first by everything else (via get_settings()), so
+# setting it here guarantees it's in place in time.
+#
+# Only quiets FFmpeg's decoder log spam ("mmco: unref short failure", "co
+# located POCs unavailable", etc. — harmless concealment of corrupted frames
+# from packet loss/stream discontinuities, not a crash). Deliberately NOT
+# forcing rtsp_transport=tcp here: OPENCV_FFMPEG_CAPTURE_OPTIONS is a global
+# setting applied to every cv2.VideoCapture call regardless of source type,
+# so it also gets attached to plain local video files and UDP-only cameras —
+# an unrecognized/unsupported option there can make the capture fail to open
+# at all. If a specific deployment's RTSP source needs TCP, set that
+# per-source via the rtsp:// URL's own client (most cameras support
+# `?transport=tcp` or a device-side config setting) rather than globally here.
+os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")  # AV_LOG_QUIET — this reads a raw int, not a symbolic name
+
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -22,7 +40,6 @@ class Settings:
     confidence_threshold: float = float(os.getenv("CONFIDENCE_THRESHOLD", "0.45"))
     iou_threshold: float = float(os.getenv("IOU_THRESHOLD", "0.45"))
     image_size: int = int(os.getenv("IMAGE_SIZE", "640"))
-    webcam_index: int = int(os.getenv("WEBCAM_INDEX", "0"))
     webcam_frame_skip: int = int(os.getenv("WEBCAM_FRAME_SKIP", "1"))
     media_dir: str = os.getenv("MEDIA_DIR", "media")
     tracker_config_path: str = os.getenv("TRACKER_CONFIG_PATH", str(_BACKEND_DIR / "bytetrack.yaml"))
@@ -46,6 +63,12 @@ class Settings:
     counting_line_fraction: float = float(os.getenv("COUNTING_LINE_FRACTION", "0.5"))
     calibration_min_samples: int = int(os.getenv("CALIBRATION_MIN_SAMPLES", "20"))
     min_hit_streak: int = int(os.getenv("MIN_HIT_STREAK", "3"))
+    # Each concurrent camera loads its own YOLO model instance (see
+    # camera_manager.py — tracker state can't safely be shared across
+    # independent streams), so this is really a GPU/CPU memory ceiling, not
+    # an arbitrary product limit. Tune per deployment hardware.
+    max_concurrent_cameras: int = int(os.getenv("MAX_CONCURRENT_CAMERAS", "4"))
+    history_db_path: str = os.getenv("HISTORY_DB_PATH", str(_BACKEND_DIR / "data" / "history.db"))
     cors_origins: list[str] = None  # set in get_settings()
 
     def __post_init__(self):

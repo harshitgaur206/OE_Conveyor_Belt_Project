@@ -14,13 +14,16 @@ import {
   Square,
   Camera,
   Router,
+  Plus,
+  History as HistoryIcon,
+  LayoutGrid,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { UploadZone } from "@/components/UploadZone";
 import { ApiError, checkStreamSource } from "@/lib/api";
-import type { DetectionMode, LiveSource } from "@/types/detection";
+import type { CameraSummary, DetectionMode, GridLayout, LiveSource } from "@/types/detection";
 
 interface ControlPanelProps {
   mode: DetectionMode;
@@ -29,20 +32,28 @@ interface ControlPanelProps {
   onFileSelected: (file: File | null) => void;
   liveSource: LiveSource;
   onLiveSourceChange: (source: LiveSource) => void;
-  rtspUrl: string;
-  onRtspUrlChange: (url: string) => void;
   onRunDetection: () => void;
   isRunning: boolean;
-  isStreaming: boolean;
-  onStopStream: () => void;
   disabled: boolean;
+
+  isBrowserStreaming: boolean;
+  onStopBrowserStream: () => void;
+
+  cameras: CameraSummary[];
+  onAddCamera: (name: string, rtspUrl: string) => void;
+  isAddingCamera: boolean;
+  gridLayout: GridLayout;
+  onGridLayoutChange: (layout: GridLayout) => void;
 }
 
 const modes: { value: DetectionMode; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { value: "image", label: "Image", icon: ImageIcon },
   { value: "video", label: "Video", icon: Film },
   { value: "webcam", label: "Live", icon: Radio },
+  { value: "history", label: "History", icon: HistoryIcon },
 ];
+
+const GRID_LAYOUTS: GridLayout[] = [1, 2, 4, 6, 9];
 
 type TestState = "idle" | "checking" | "ok" | "error";
 
@@ -53,22 +64,29 @@ export function ControlPanel({
   onFileSelected,
   liveSource,
   onLiveSourceChange,
-  rtspUrl,
-  onRtspUrlChange,
   onRunDetection,
   isRunning,
-  isStreaming,
-  onStopStream,
   disabled,
+  isBrowserStreaming,
+  onStopBrowserStream,
+  cameras,
+  onAddCamera,
+  isAddingCamera,
+  gridLayout,
+  onGridLayoutChange,
 }: ControlPanelProps) {
   const [testState, setTestState] = useState<TestState>("idle");
   const [testMessage, setTestMessage] = useState("");
-  const canRun = mode === "webcam" ? !isStreaming : Boolean(file) && !isRunning;
+  const [cameraName, setCameraName] = useState("");
+  const [cameraUrl, setCameraUrl] = useState("");
+
+  const canRunUpload = mode === "image" || mode === "video" ? Boolean(file) && !isRunning : false;
+  const showRunButton = mode === "image" || mode === "video" || (mode === "webcam" && liveSource === "browser");
 
   const handleTestConnection = async () => {
     setTestState("checking");
     try {
-      const result = await checkStreamSource(rtspUrl);
+      const result = await checkStreamSource(cameraUrl);
       if (result.opened && result.frame_read) {
         setTestState("ok");
         setTestMessage(`${result.width}×${result.height} @ ${result.fps.toFixed(0)}fps`);
@@ -86,11 +104,19 @@ export function ControlPanel({
     }
   };
 
+  const handleAddCamera = () => {
+    if (!cameraName.trim() || !cameraUrl.trim()) return;
+    onAddCamera(cameraName.trim(), cameraUrl.trim());
+    setCameraName("");
+    setCameraUrl("");
+    setTestState("idle");
+  };
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>Control Panel</CardTitle>
-        {isStreaming && (
+        {(isBrowserStreaming || cameras.length > 0) && (
           <span className="flex items-center gap-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-red-400">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
             Live
@@ -98,7 +124,7 @@ export function ControlPanel({
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
-        <div className="grid grid-cols-3 gap-1.5 rounded-xl border border-white/10 bg-black/20 p-1.5">
+        <div className="grid grid-cols-4 gap-1.5 rounded-xl border border-white/10 bg-black/20 p-1.5">
           {modes.map((m) => {
             const Icon = m.icon;
             const active = mode === m.value;
@@ -120,9 +146,11 @@ export function ControlPanel({
           })}
         </div>
 
-        {mode !== "webcam" ? (
+        {(mode === "image" || mode === "video") && (
           <UploadZone mode={mode} file={file} onFileSelected={onFileSelected} />
-        ) : (
+        )}
+
+        {mode === "webcam" && (
           <div className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-1.5 rounded-xl border border-white/10 bg-black/20 p-1.5">
               {(
@@ -136,10 +164,9 @@ export function ControlPanel({
                 return (
                   <button
                     key={s.value}
-                    onClick={() => !isStreaming && onLiveSourceChange(s.value)}
-                    disabled={isStreaming}
+                    onClick={() => onLiveSourceChange(s.value)}
                     className={clsx(
-                      "flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-medium transition-all duration-200 disabled:cursor-not-allowed disabled:opacity-60",
+                      "flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-medium transition-all duration-200",
                       active
                         ? "bg-gradient-to-b from-emerald-500/20 to-cyan-500/10 text-emerald-300 ring-1 ring-inset ring-emerald-400/30"
                         : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
@@ -159,67 +186,118 @@ export function ControlPanel({
                 localhost).
               </p>
             ) : (
-              <div className="flex flex-col gap-2">
-                <label className="font-mono text-[11px] uppercase tracking-wider text-slate-500">
-                  RTSP Source <span className="text-slate-700">{"// optional"}</span>
-                </label>
-                <div className="flex gap-2">
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-2">
+                  <label className="font-mono text-[11px] uppercase tracking-wider text-slate-500">
+                    Add Camera
+                  </label>
                   <input
                     type="text"
-                    value={rtspUrl}
-                    onChange={(e) => {
-                      onRtspUrlChange(e.target.value);
-                      setTestState("idle");
-                    }}
-                    disabled={isStreaming}
-                    placeholder="rtsp://user:pass@192.168.1.50:554/stream"
-                    className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-xs text-slate-200 placeholder:text-slate-700 focus:border-emerald-400/50 focus:outline-none focus:ring-1 focus:ring-emerald-400/30 disabled:opacity-50"
+                    value={cameraName}
+                    onChange={(e) => setCameraName(e.target.value)}
+                    placeholder="Camera name (e.g. Line 2 Belt)"
+                    className="rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-xs text-slate-200 placeholder:text-slate-700 focus:border-emerald-400/50 focus:outline-none focus:ring-1 focus:ring-emerald-400/30"
                   />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={cameraUrl}
+                      onChange={(e) => {
+                        setCameraUrl(e.target.value);
+                        setTestState("idle");
+                      }}
+                      placeholder="rtsp://user:pass@192.168.1.50:554/stream"
+                      className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-xs text-slate-200 placeholder:text-slate-700 focus:border-emerald-400/50 focus:outline-none focus:ring-1 focus:ring-emerald-400/30"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={handleTestConnection}
+                      disabled={!cameraUrl || testState === "checking"}
+                      className="px-3"
+                    >
+                      {testState === "checking" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Wifi className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </div>
+                  {testState === "ok" && (
+                    <p className="flex items-center gap-1.5 font-mono text-[11px] text-emerald-400">
+                      <CheckCircle2 className="h-3.5 w-3.5" /> reachable · {testMessage}
+                    </p>
+                  )}
+                  {testState === "error" && (
+                    <p className="flex items-center gap-1.5 text-xs text-red-400">
+                      <XCircle className="h-3.5 w-3.5 shrink-0" /> {testMessage}
+                    </p>
+                  )}
                   <Button
-                    variant="outline"
-                    onClick={handleTestConnection}
-                    disabled={!rtspUrl || testState === "checking" || isStreaming}
-                    className="px-3"
+                    variant="secondary"
+                    onClick={handleAddCamera}
+                    disabled={!cameraName.trim() || !cameraUrl.trim() || isAddingCamera}
                   >
-                    {testState === "checking" ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                    {isAddingCamera ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
                     ) : (
-                      <Wifi className="h-4 w-4" />
+                      <Plus className="h-3.5 w-3.5" />
                     )}
+                    Add Camera
                   </Button>
                 </div>
-                {testState === "ok" && (
-                  <p className="flex items-center gap-1.5 font-mono text-[11px] text-emerald-400">
-                    <CheckCircle2 className="h-3.5 w-3.5" /> reachable · {testMessage}
-                  </p>
-                )}
-                {testState === "error" && (
-                  <p className="flex items-center gap-1.5 text-xs text-red-400">
-                    <XCircle className="h-3.5 w-3.5 shrink-0" /> {testMessage}
-                  </p>
-                )}
-                {!rtspUrl && (
-                  <p className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5 text-xs text-slate-500">
-                    No RTSP source set — streams the <span className="text-slate-300">backend&apos;s</span> local
-                    webcam instead.
-                  </p>
+
+                {cameras.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    <label className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+                      <LayoutGrid className="h-3 w-3" /> Grid Layout
+                    </label>
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {GRID_LAYOUTS.map((layout) => (
+                        <button
+                          key={layout}
+                          onClick={() => onGridLayoutChange(layout)}
+                          className={clsx(
+                            "rounded-lg py-1.5 text-xs font-medium transition-all duration-200",
+                            gridLayout === layout
+                              ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-inset ring-emerald-400/30"
+                              : "bg-black/20 text-slate-500 hover:bg-white/5 hover:text-slate-300"
+                          )}
+                        >
+                          {layout}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="font-mono text-[10px] text-slate-600">
+                      {cameras.length} camera{cameras.length === 1 ? "" : "s"} active
+                    </p>
+                  </div>
                 )}
               </div>
             )}
           </div>
         )}
 
-        {mode === "webcam" && isStreaming ? (
-          <Button variant="secondary" onClick={onStopStream}>
-            <Square className="h-3.5 w-3.5 fill-current" />
-            Stop Stream
-          </Button>
-        ) : (
-          <Button onClick={onRunDetection} disabled={!canRun || disabled}>
-            {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
-            Run Detection
-          </Button>
+        {mode === "history" && (
+          <p className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5 text-xs text-slate-500">
+            Past image/video detections and completed camera sessions are listed on the right.
+          </p>
         )}
+
+        {showRunButton &&
+          (mode === "webcam" && isBrowserStreaming ? (
+            <Button variant="secondary" onClick={onStopBrowserStream}>
+              <Square className="h-3.5 w-3.5 fill-current" />
+              Stop Stream
+            </Button>
+          ) : (
+            <Button
+              onClick={onRunDetection}
+              disabled={disabled || (mode === "webcam" ? isBrowserStreaming : !canRunUpload)}
+            >
+              {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4 fill-current" />}
+              Run Detection
+            </Button>
+          ))}
       </CardContent>
     </Card>
   );
