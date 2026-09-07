@@ -46,7 +46,7 @@ export function ROICanvas({ previewSrc, onConfirm, onSkip, initialConfidence }: 
       <div
         ref={containerRef}
         onClick={handleClick}
-        className="relative max-h-[60vh] w-full max-w-full cursor-crosshair overflow-hidden rounded-lg ring-1 ring-white/10"
+        className="relative max-h-[60vh] w-full max-w-full cursor-crosshair overflow-hidden rounded-lg ring-1 ring-border"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -57,19 +57,15 @@ export function ROICanvas({ previewSrc, onConfirm, onSkip, initialConfidence }: 
         />
         <svg className="pointer-events-none absolute inset-0 h-full w-full">
           {points.length > 1 && (
-            <polygon
-              points={polygonStr}
-              className="fill-emerald-400/20 stroke-emerald-400"
-              strokeWidth={2}
-            />
+            <polygon points={polygonStr} className="fill-accent/20 stroke-accent" strokeWidth={2} />
           )}
           {points.map(([x, y], index) => (
-            <circle key={index} cx={x} cy={y} r={4} className="fill-emerald-400" />
+            <circle key={index} cx={x} cy={y} r={4} className="fill-accent" />
           ))}
         </svg>
       </div>
 
-      <p className="text-center font-mono text-[11px] uppercase tracking-wider text-slate-500">
+      <p className="text-center font-mono text-[11px] uppercase tracking-wider text-text-faint">
         Click to outline the belt area — needs at least {MIN_POINTS} points
       </p>
 

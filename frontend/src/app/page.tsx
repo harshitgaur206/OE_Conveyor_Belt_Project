@@ -367,6 +367,7 @@ export default function DashboardPage() {
               imageSrc={imageSrc}
               videoSrc={videoSrc}
               liveSource={liveSource}
+              pendingFile={file}
               browserFrameSrc={browserCamera.frameSrc}
               browserCameraError={browserCamera.error}
               browserCalibrating={browserCamera.calibrating}

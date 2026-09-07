@@ -117,14 +117,14 @@ export function ControlPanel({
       <CardHeader>
         <CardTitle>Control Panel</CardTitle>
         {(isBrowserStreaming || cameras.length > 0) && (
-          <span className="flex items-center gap-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-red-400">
+          <span className="flex items-center gap-1.5 font-mono text-[10px] font-medium uppercase tracking-wider text-red-500">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
             Live
           </span>
         )}
       </CardHeader>
       <CardContent className="flex flex-col gap-5">
-        <div className="grid grid-cols-4 gap-1.5 rounded-xl border border-white/10 bg-black/20 p-1.5">
+        <div className="grid grid-cols-4 gap-1.5 rounded-xl border border-border bg-bg-subtle/40 p-1.5">
           {modes.map((m) => {
             const Icon = m.icon;
             const active = mode === m.value;
@@ -135,8 +135,8 @@ export function ControlPanel({
                 className={clsx(
                   "flex flex-col items-center gap-1.5 rounded-lg px-2 py-2.5 text-xs font-medium transition-all duration-200",
                   active
-                    ? "bg-gradient-to-b from-emerald-500/20 to-cyan-500/10 text-emerald-300 ring-1 ring-inset ring-emerald-400/30 shadow-[0_0_16px_-4px_rgba(16,185,129,0.5)]"
-                    : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
+                    ? "bg-accent/12 text-accent ring-1 ring-inset ring-accent/30"
+                    : "text-text-faint hover:bg-bg-subtle hover:text-text-muted"
                 )}
               >
                 <Icon className="h-4 w-4" />
@@ -152,7 +152,7 @@ export function ControlPanel({
 
         {mode === "webcam" && (
           <div className="flex flex-col gap-3">
-            <div className="grid grid-cols-2 gap-1.5 rounded-xl border border-white/10 bg-black/20 p-1.5">
+            <div className="grid grid-cols-2 gap-1.5 rounded-xl border border-border bg-bg-subtle/40 p-1.5">
               {(
                 [
                   { value: "browser" as const, label: "This Device", icon: Camera },
@@ -168,8 +168,8 @@ export function ControlPanel({
                     className={clsx(
                       "flex items-center justify-center gap-1.5 rounded-lg px-2 py-2 text-xs font-medium transition-all duration-200",
                       active
-                        ? "bg-gradient-to-b from-emerald-500/20 to-cyan-500/10 text-emerald-300 ring-1 ring-inset ring-emerald-400/30"
-                        : "text-slate-500 hover:bg-white/5 hover:text-slate-300"
+                        ? "bg-accent/12 text-accent ring-1 ring-inset ring-accent/30"
+                        : "text-text-faint hover:bg-bg-subtle hover:text-text-muted"
                     )}
                   >
                     <Icon className="h-3.5 w-3.5" />
@@ -180,15 +180,15 @@ export function ControlPanel({
             </div>
 
             {liveSource === "browser" ? (
-              <p className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5 text-xs text-slate-500">
-                Uses <span className="text-slate-300">this device&apos;s own camera</span> — captured in your
+              <p className="rounded-lg border border-border bg-bg-subtle/30 px-3 py-2.5 text-xs text-text-muted">
+                Uses <span className="text-text">this device&apos;s own camera</span> — captured in your
                 browser and streamed to the backend for detection. Requires camera permission and HTTPS (or
                 localhost).
               </p>
             ) : (
               <div className="flex flex-col gap-3">
                 <div className="flex flex-col gap-2">
-                  <label className="font-mono text-[11px] uppercase tracking-wider text-slate-500">
+                  <label className="font-mono text-[11px] uppercase tracking-wider text-text-faint">
                     Add Camera
                   </label>
                   <input
@@ -196,7 +196,7 @@ export function ControlPanel({
                     value={cameraName}
                     onChange={(e) => setCameraName(e.target.value)}
                     placeholder="Camera name (e.g. Line 2 Belt)"
-                    className="rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 text-xs text-slate-200 placeholder:text-slate-700 focus:border-emerald-400/50 focus:outline-none focus:ring-1 focus:ring-emerald-400/30"
+                    className="rounded-lg border border-border bg-bg-subtle/50 px-3 py-2.5 text-xs text-text placeholder:text-text-faint focus:border-accent/50 focus:outline-none focus:ring-1 focus:ring-accent/30"
                   />
                   <div className="flex gap-2">
                     <input
@@ -207,7 +207,7 @@ export function ControlPanel({
                         setTestState("idle");
                       }}
                       placeholder="rtsp://user:pass@192.168.1.50:554/stream"
-                      className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/30 px-3 py-2.5 font-mono text-xs text-slate-200 placeholder:text-slate-700 focus:border-emerald-400/50 focus:outline-none focus:ring-1 focus:ring-emerald-400/30"
+                      className="min-w-0 flex-1 rounded-lg border border-border bg-bg-subtle/50 px-3 py-2.5 font-mono text-xs text-text placeholder:text-text-faint focus:border-accent/50 focus:outline-none focus:ring-1 focus:ring-accent/30"
                     />
                     <Button
                       variant="outline"
@@ -223,12 +223,12 @@ export function ControlPanel({
                     </Button>
                   </div>
                   {testState === "ok" && (
-                    <p className="flex items-center gap-1.5 font-mono text-[11px] text-emerald-400">
+                    <p className="flex items-center gap-1.5 font-mono text-[11px] text-emerald-600">
                       <CheckCircle2 className="h-3.5 w-3.5" /> reachable · {testMessage}
                     </p>
                   )}
                   {testState === "error" && (
-                    <p className="flex items-center gap-1.5 text-xs text-red-400">
+                    <p className="flex items-center gap-1.5 text-xs text-red-500">
                       <XCircle className="h-3.5 w-3.5 shrink-0" /> {testMessage}
                     </p>
                   )}
@@ -248,7 +248,7 @@ export function ControlPanel({
 
                 {cameras.length > 0 && (
                   <div className="flex flex-col gap-2">
-                    <label className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-slate-500">
+                    <label className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-wider text-text-faint">
                       <LayoutGrid className="h-3 w-3" /> Grid Layout
                     </label>
                     <div className="grid grid-cols-5 gap-1.5">
@@ -259,15 +259,15 @@ export function ControlPanel({
                           className={clsx(
                             "rounded-lg py-1.5 text-xs font-medium transition-all duration-200",
                             gridLayout === layout
-                              ? "bg-emerald-500/20 text-emerald-300 ring-1 ring-inset ring-emerald-400/30"
-                              : "bg-black/20 text-slate-500 hover:bg-white/5 hover:text-slate-300"
+                              ? "bg-accent/15 text-accent ring-1 ring-inset ring-accent/30"
+                              : "bg-bg-subtle/40 text-text-faint hover:bg-bg-subtle hover:text-text-muted"
                           )}
                         >
                           {layout}
                         </button>
                       ))}
                     </div>
-                    <p className="font-mono text-[10px] text-slate-600">
+                    <p className="font-mono text-[10px] text-text-faint">
                       {cameras.length} camera{cameras.length === 1 ? "" : "s"} active
                     </p>
                   </div>
@@ -278,7 +278,7 @@ export function ControlPanel({
         )}
 
         {mode === "history" && (
-          <p className="rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2.5 text-xs text-slate-500">
+          <p className="rounded-lg border border-border bg-bg-subtle/30 px-3 py-2.5 text-xs text-text-muted">
             Past image/video detections and completed camera sessions are listed on the right.
           </p>
         )}

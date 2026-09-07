@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Script from "next/script";
 import { Toaster } from "sonner";
 import "./globals.css";
 
@@ -18,23 +19,38 @@ export const metadata: Metadata = {
   description: "Prototype dashboard for the Cement Bag Detection System",
 };
 
+// Runs before hydration so the saved theme is applied before first paint —
+// without this, the page would flash the default "brown" theme for a beat
+// before JS picks up a saved "blue" preference from localStorage.
+const themeInitScript = `
+(function () {
+  try {
+    var saved = localStorage.getItem("theme");
+    if (saved === "blue") document.documentElement.setAttribute("data-theme", "blue");
+  } catch (e) {}
+})();
+`;
+
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased dark`}
-    >
-      <body className="min-h-full flex flex-col bg-[#05070d] text-slate-100">
+    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+      <body className="min-h-full flex flex-col bg-bg text-text">
+        {/* beforeInteractive is Next.js's supported mechanism for a script
+            that must run before hydration — a plain <script> tag in the
+            App Router isn't guaranteed to execute the same way. */}
+        <Script id="theme-init" strategy="beforeInteractive">
+          {themeInitScript}
+        </Script>
         <div className="app-backdrop" aria-hidden="true" />
         {children}
         <Toaster
-          theme="dark"
           position="top-right"
           richColors
           toastOptions={{
             style: {
-              background: "rgba(15, 23, 42, 0.9)",
-              border: "1px solid rgba(51, 65, 85, 0.6)",
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-strong)",
+              color: "var(--text)",
               backdropFilter: "blur(8px)",
             },
           }}
