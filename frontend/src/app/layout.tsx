@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { Geist, Geist_Mono } from "next/font/google";
-import Script from "next/script";
 import { Toaster } from "sonner";
 import "./globals.css";
 
@@ -19,28 +19,23 @@ export const metadata: Metadata = {
   description: "Prototype dashboard for the Cement Bag Detection System",
 };
 
-// Runs before hydration so the saved theme is applied before first paint —
-// without this, the page would flash the default "brown" theme for a beat
-// before JS picks up a saved "blue" preference from localStorage.
-const themeInitScript = `
-(function () {
-  try {
-    var saved = localStorage.getItem("theme");
-    if (saved === "blue") document.documentElement.setAttribute("data-theme", "blue");
-  } catch (e) {}
-})();
-`;
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  // Theme read server-side from a cookie (set by Header's toggle) so the
+  // correct data-theme attribute is already in the HTML the server sends —
+  // no blocking init script needed, and nothing for the client to "catch
+  // up" on after hydration, which is what caused both the script-tag
+  // console error and the hydration mismatch from the previous
+  // script+localStorage approach.
+  const cookieStore = await cookies();
+  const theme = cookieStore.get("theme")?.value === "blue" ? "blue" : undefined;
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      data-theme={theme}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
       <body className="min-h-full flex flex-col bg-bg text-text">
-        {/* beforeInteractive is Next.js's supported mechanism for a script
-            that must run before hydration — a plain <script> tag in the
-            App Router isn't guaranteed to execute the same way. */}
-        <Script id="theme-init" strategy="beforeInteractive">
-          {themeInitScript}
-        </Script>
         <div className="app-backdrop" aria-hidden="true" />
         {children}
         <Toaster

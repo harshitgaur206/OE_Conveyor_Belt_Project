@@ -51,20 +51,19 @@ function useClock() {
 // Self-contained (not lifted to context): every other component reacts to
 // the data-theme attribute purely through CSS variables, so only this
 // toggle itself needs JS-side theme state.
+//
+// Theme lives in a cookie, not localStorage: layout.tsx (a Server
+// Component) reads that same cookie to render the correct data-theme
+// attribute directly in the server HTML, so there's no blocking init
+// script and no post-hydration "catch up" — the value read here on mount
+// always matches what the server already rendered.
+function readThemeCookie(): Theme {
+  if (typeof document === "undefined") return "brown";
+  return document.cookie.split("; ").some((c) => c === "theme=blue") ? "blue" : "brown";
+}
+
 function useTheme() {
-  // Lazily read the DOM attribute rather than localStorage directly: the
-  // blocking script in layout.tsx's <head> already set data-theme on
-  // <html> before this component ever mounts, so this reflects the real
-  // saved preference on the client's very first render — no effect (and
-  // no extra re-render) needed to "catch up" after mount. Server-rendered
-  // HTML has no theme applied yet (document doesn't exist there), so the
-  // toggle icon can legitimately differ for one paint; see
-  // suppressHydrationWarning below.
-  const [theme, setTheme] = useState<Theme>(() =>
-    typeof document !== "undefined" && document.documentElement.getAttribute("data-theme") === "blue"
-      ? "blue"
-      : "brown"
-  );
+  const [theme, setTheme] = useState<Theme>(readThemeCookie);
 
   const toggle = () => {
     setTheme((current) => {
@@ -74,7 +73,7 @@ function useTheme() {
       } else {
         document.documentElement.removeAttribute("data-theme");
       }
-      localStorage.setItem("theme", next);
+      document.cookie = `theme=${next}; path=/; max-age=31536000; samesite=lax`;
       return next;
     });
   };
@@ -107,7 +106,6 @@ export function Header({ connectionState, health }: HeaderProps) {
           <button
             onClick={toggle}
             title={theme === "brown" ? "Switch to blue theme" : "Switch to brown theme"}
-            suppressHydrationWarning
             className="flex h-8 w-8 items-center justify-center rounded-full border border-border bg-bg-subtle text-text-muted transition-colors hover:border-border-strong hover:text-accent"
           >
             {theme === "brown" ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
